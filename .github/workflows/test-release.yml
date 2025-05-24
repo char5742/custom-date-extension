@@ -21,11 +21,11 @@ jobs:
   # Build the extension for all platforms
   build:
     name: Build Extension
-    uses: ./extension-ci-tools/.github/workflows/_extension_distribution.yml
+    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v1.3.0
     with:
       extension_name: custom_date
-      duckdb_version: v1.2.2
-      ci_tools_version: v1.2.2
+      duckdb_version: v1.3.0
+      ci_tools_version: v1.3.0
       build_duckdb_shell: true
       skip_tests: false
     secrets: inherit
