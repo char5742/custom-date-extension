@@ -68,9 +68,8 @@ jobs:
       - name: Download Linux artifact
         uses: actions/download-artifact@v4
         with:
-          pattern: custom_date-*-extension-linux_amd64*
+          name: custom_date-v1.3.0-extension-linux_amd64
           path: test-extension
-          merge-multiple: true
 
       - name: Test extension functionality
         run: |
