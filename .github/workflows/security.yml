@@ -1,0 +1,209 @@
+name: Security
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Run weekly on Sundays at 2 AM UTC
+    - cron: '0 2 * * 0'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+  actions: read
+
+jobs:
+  codeql:
+    name: CodeQL Analysis
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        language: ['cpp']
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+          fetch-depth: 0
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          config-file: ./.github/codeql-config.yml
+
+      - name: Setup Git Config
+        run: |
+          git config --global --add safe.directory '*'
+
+      - name: Build for CodeQL
+        run: |
+          make clean
+          make debug
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:${{matrix.language}}"
+
+  dependency-review:
+    name: Dependency Review
+    runs-on: ubuntu-24.04
+    if: github.event_name == 'pull_request'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Dependency Review
+        uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: moderate
+          comment-summary-in-pr: true
+
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+          fetch-depth: 0
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          severity: 'CRITICAL,HIGH,MEDIUM'
+
+      - name: Upload Trivy scan results to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+      - name: Check for sensitive files
+        run: |
+          echo "Checking for sensitive files and patterns..."
+          
+          # Check for common sensitive file patterns
+          sensitive_files=$(find . -type f \( \
+            -name "*.key" -o \
+            -name "*.pem" -o \
+            -name "*.p12" -o \
+            -name "*.pfx" -o \
+            -name "*.jks" -o \
+            -name "*.keystore" -o \
+            -name "*_rsa" -o \
+            -name "*_dsa" -o \
+            -name "*_ed25519" -o \
+            -name "*_ecdsa" -o \
+            -name ".env" -o \
+            -name ".env.*" -o \
+            -name "*.env" \
+          \) | grep -v ".git/" | grep -v "duckdb/" | head -10)
+          
+          if [ -n "$sensitive_files" ]; then
+            echo "⚠️ Found potentially sensitive files:"
+            echo "$sensitive_files"
+            echo ""
+            echo "Please ensure these files don't contain sensitive information"
+          else
+            echo "✅ No sensitive files found"
+          fi
+          
+          # Check for hardcoded secrets pattern (basic check)
+          echo "Checking for hardcoded secrets patterns..."
+          secret_patterns=$(grep -r -i -E "(password|secret|key|token|api_key).*=.*['\"][^'\"]{8,}['\"]" \
+            --include="*.cpp" --include="*.hpp" --include="*.c" --include="*.h" \
+            --include="*.cmake" --include="*.yml" --include="*.yaml" \
+            . | grep -v ".git/" | grep -v "duckdb/" | head -5)
+          
+          if [ -n "$secret_patterns" ]; then
+            echo "⚠️ Found potential hardcoded secrets:"
+            echo "$secret_patterns"
+            echo ""
+            echo "Please review these patterns to ensure no actual secrets are hardcoded"
+          else
+            echo "✅ No obvious hardcoded secrets found"
+          fi
+
+  license-check:
+    name: License Compliance
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: false  # Don't check submodule licenses
+
+      - name: Check license headers
+        run: |
+          echo "Checking for license headers in source files..."
+          
+          # Find source files without license headers
+          files_without_license=""
+          
+          for file in $(find src -type f \( -name "*.cpp" -o -name "*.hpp" -o -name "*.c" -o -name "*.h" \)); do
+            if ! head -20 "$file" | grep -i -E "(copyright|license|mit|apache|gpl|bsd)" > /dev/null; then
+              files_without_license="$files_without_license\n$file"
+            fi
+          done
+          
+          if [ -n "$files_without_license" ]; then
+            echo "⚠️ Files potentially missing license headers:"
+            echo -e "$files_without_license"
+            echo ""
+            echo "Consider adding appropriate license headers to source files"
+          else
+            echo "✅ All source files appear to have license information"
+          fi
+
+      - name: Verify LICENSE file
+        run: |
+          if [ -f "LICENSE" ]; then
+            echo "✅ LICENSE file exists"
+            echo "License type: $(head -1 LICENSE)"
+          else
+            echo "⚠️ No LICENSE file found in repository root"
+            echo "Consider adding a LICENSE file to clarify the project's licensing terms"
+          fi
+
+  security-summary:
+    name: Security Summary
+    needs: [codeql, security-scan, license-check]
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Generate Security Summary
+        run: |
+          echo "## Security Scan Results 🔒" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Scan Date**: $(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          echo "### Scan Status" >> $GITHUB_STEP_SUMMARY
+          echo "- **CodeQL**: ${{ needs.codeql.result == 'success' && '✅ Passed' || '❌ Failed' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Security Scan**: ${{ needs.security-scan.result == 'success' && '✅ Passed' || '❌ Failed' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **License Check**: ${{ needs.license-check.result == 'success' && '✅ Passed' || '❌ Failed' }}" >> $GITHUB_STEP_SUMMARY
+          
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "- **Dependency Review**: Included" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Next Steps" >> $GITHUB_STEP_SUMMARY
+          echo "- Review any security alerts in the Security tab" >> $GITHUB_STEP_SUMMARY
+          echo "- Check detailed scan results for any findings" >> $GITHUB_STEP_SUMMARY
+          echo "- Ensure all dependencies are up to date" >> $GITHUB_STEP_SUMMARY
+          
+          if [ "${{ needs.codeql.result }}" != "success" ] || [ "${{ needs.security-scan.result }}" != "success" ]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "⚠️ **Action Required**: Some security scans failed. Please review the results." >> $GITHUB_STEP_SUMMARY
+          fi

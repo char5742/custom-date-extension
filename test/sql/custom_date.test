@@ -1,0 +1,60 @@
+# name: test/sql/custom_date.test
+# description: test custom_date extension
+# group: [custom_date]
+
+# Before we load the extension, YYYY.MM.DD format should not work
+statement error
+SELECT '2023.01.15'::DATE;
+----
+
+# Require statement will ensure this test is run with this extension loaded
+require custom_date
+
+# Test automatic casting with the extension loaded
+query I
+SELECT '2023.01.15'::DATE;
+----
+2023-01-15
+
+query I
+SELECT CAST('2024.02.29' AS DATE);
+----
+2024-02-29
+
+# Test invalid dates return NULL
+query I
+SELECT '2023.13.15'::DATE;
+----
+NULL
+
+query I
+SELECT '2023.02.29'::DATE;
+----
+NULL
+
+# Test that standard date formats still work
+query I
+SELECT '2023-01-15'::DATE;
+----
+2023-01-15
+
+# Test reading CSV with built-in dateformat parameter
+query IIII
+SELECT * FROM read_csv('test/data/test_custom_date.csv', dateformat='%Y.%m.%d');
+----
+1	Alice	2023-01-15	1000.50
+2	Bob	2022-12-24	2500.75
+3	Charlie	2021-07-30	500.00
+4	Diana	2024-02-29	3000.25
+5	Eve	2020-03-10	750.50
+
+# Test reading CSV as VARCHAR and using automatic casting
+query IIII
+SELECT id::INTEGER, name, date_of_birth::DATE, amount::DOUBLE 
+FROM read_csv('test/data/test_custom_date.csv', columns={'id': 'INTEGER', 'name': 'VARCHAR', 'date_of_birth': 'VARCHAR', 'amount': 'DOUBLE'});
+----
+1	Alice	2023-01-15	1000.50
+2	Bob	2022-12-24	2500.75
+3	Charlie	2021-07-30	500.00
+4	Diana	2024-02-29	3000.25
+5	Eve	2020-03-10	750.50

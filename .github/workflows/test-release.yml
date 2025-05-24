@@ -1,0 +1,190 @@
+name: Test Release Process
+on:
+  workflow_dispatch:
+    inputs:
+      test_tag:
+        description: 'Test tag name (e.g., v1.0.0-test)'
+        required: true
+        default: 'v1.0.0-test'
+        type: string
+      create_actual_release:
+        description: 'Create an actual GitHub release (will be marked as prerelease)'
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Build the extension for all platforms
+  build:
+    name: Build Extension
+    uses: ./extension-ci-tools/.github/workflows/_extension_distribution.yml
+    with:
+      extension_name: custom_date
+      duckdb_version: v1.2.2
+      ci_tools_version: v1.2.2
+      build_duckdb_shell: true
+      skip_tests: false
+    secrets: inherit
+
+  # Test the release process without actually creating a release
+  test-release:
+    name: Test Release Process
+    runs-on: ubuntu-24.04
+    needs: build
+    permissions:
+      contents: write
+      id-token: write
+      actions: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: custom_date-*
+          merge-multiple: false
+
+      - name: List downloaded artifacts
+        run: |
+          echo "Downloaded artifacts:"
+          find artifacts -type f -name "*.duckdb_extension" | sort
+          echo ""
+          echo "Artifact structure:"
+          tree artifacts/ || find artifacts -type f
+
+      - name: Prepare release assets
+        run: |
+          mkdir -p release-assets
+          
+          # Find and rename extension files for better organization
+          for artifact_dir in artifacts/*/; do
+            if [ -d "$artifact_dir" ]; then
+              artifact_name=$(basename "$artifact_dir")
+              echo "Processing artifact: $artifact_name"
+              
+              # Find extension files in this artifact
+              find "$artifact_dir" -name "*.duckdb_extension" -type f | while read -r ext_file; do
+                # Extract architecture/platform info from artifact name
+                platform_info=$(echo "$artifact_name" | sed 's/custom_date-v[0-9]\+\.[0-9]\+\.[0-9]\+-extension-//')
+                
+                # Create descriptive filename
+                new_name="custom_date-${{ github.event.inputs.test_tag }}-${platform_info}.duckdb_extension"
+                
+                echo "Would copy $ext_file to release-assets/$new_name"
+                cp "$ext_file" "release-assets/$new_name"
+              done
+              
+              # Also copy any shell binaries if they exist
+              find "$artifact_dir" -name "duckdb" -type f | while read -r shell_file; do
+                platform_info=$(echo "$artifact_name" | sed 's/custom_date-v[0-9]\+\.[0-9]\+\.[0-9]\+-extension-//')
+                new_name="duckdb-${{ github.event.inputs.test_tag }}-${platform_info}"
+                
+                echo "Would copy shell $shell_file to release-assets/$new_name"
+                cp "$shell_file" "release-assets/$new_name"
+                chmod +x "release-assets/$new_name"
+              done
+            fi
+          done
+          
+          echo "Release assets that would be created:"
+          ls -la release-assets/
+
+      - name: Test one extension
+        run: |
+          # Find a Linux extension to test
+          linux_ext=$(find release-assets -name "*linux*.duckdb_extension" | head -1)
+          linux_shell=$(find release-assets -name "*linux*" -executable | head -1)
+          
+          if [ -f "$linux_ext" ] && [ -f "$linux_shell" ]; then
+            echo "Testing extension: $linux_ext"
+            echo "Using shell: $linux_shell"
+            
+            "$linux_shell" -c "
+              LOAD '$linux_ext';
+              SELECT '2024.01.15'::DATE as test_result;
+              SELECT 'Extension loaded and working!' as status;
+            "
+          else
+            echo "Could not find Linux extension or shell for testing"
+          fi
+
+      - name: Generate test release notes
+        id: release_notes
+        run: |
+          echo "## Custom Date Extension ${{ github.event.inputs.test_tag }} (TEST RELEASE)" > release_notes.md
+          echo "" >> release_notes.md
+          echo "⚠️ **This is a test release for validation purposes only**" >> release_notes.md
+          echo "" >> release_notes.md
+          echo "DuckDB extension for parsing YYYY.MM.DD date format." >> release_notes.md
+          echo "" >> release_notes.md
+          echo "### Available Test Artifacts" >> release_notes.md
+          echo "" >> release_notes.md
+          for file in release-assets/*.duckdb_extension; do
+            if [ -f "$file" ]; then
+              filename=$(basename "$file")
+              platform=$(echo "$filename" | sed "s/custom_date-${{ github.event.inputs.test_tag }}-//" | sed 's/.duckdb_extension$//')
+              size=$(du -h "$file" | cut -f1)
+              echo "- **$platform**: \`$filename\` ($size)" >> release_notes.md
+            fi
+          done
+          
+          cat release_notes.md
+
+      - name: Create Test Release
+        if: ${{ github.event.inputs.create_actual_release == 'true' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.test_tag }}
+          name: Custom Date Extension ${{ github.event.inputs.test_tag }} (TEST)
+          body_path: release_notes.md
+          files: |
+            release-assets/*
+          draft: false
+          prerelease: true
+          generate_release_notes: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Test Summary
+        run: |
+          echo "## Test Release Process Completed! 🧪" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Test Tag**: ${{ github.event.inputs.test_tag }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Actual Release Created**: ${{ github.event.inputs.create_actual_release }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Test Assets Prepared:" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          total_size=0
+          asset_count=0
+          
+          for file in release-assets/*; do
+            if [ -f "$file" ]; then
+              filename=$(basename "$file")
+              size_bytes=$(stat -c%s "$file")
+              size_human=$(du -h "$file" | cut -f1)
+              echo "- **$filename** ($size_human)" >> $GITHUB_STEP_SUMMARY
+              total_size=$((total_size + size_bytes))
+              asset_count=$((asset_count + 1))
+            fi
+          done
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Total Assets**: $asset_count" >> $GITHUB_STEP_SUMMARY
+          echo "**Total Size**: $(echo $total_size | awk '{printf "%.1f MB", $1/1024/1024}')" >> $GITHUB_STEP_SUMMARY
+          
+          if [ "${{ github.event.inputs.create_actual_release }}" = "true" ]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "🔗 **Release URL**: ${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ github.event.inputs.test_tag }}" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "ℹ️ No actual release was created. Set 'create_actual_release' to true to create a test release." >> $GITHUB_STEP_SUMMARY
+          fi

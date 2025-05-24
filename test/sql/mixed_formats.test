@@ -1,0 +1,84 @@
+# name: test/sql/mixed_formats.test
+# description: Test reading CSV with mixed date format types
+# group: [custom_date]
+
+# Require the custom_date extension
+require custom_date
+
+# Test 1: Read CSV with mixed date formats where some columns use YYYY.MM.DD and others use YYYY-MM-DD
+# The extension should handle custom format (YYYY.MM.DD) while DuckDB handles standard format
+query IITTTRI
+SELECT * FROM read_csv('test/data/test_mixed_formats.csv', auto_detect=true);
+----
+1	Alice	2023-01-15	2024.12.01	1990.05.20	1000.50	active
+2	Bob	2022.06.30	2024-11-28	1985-03-15	2500.75	inactive
+3	Charlie	2021-07-04	2024.11.30	1992.11.08	500.00	active
+4	Diana	2024.02.29	2024-12-02	1988-07-22	3000.25	active
+5	Eve	2020.03.10	2024.12.03	1995.01.01	750.50	pending
+6	Frank	2023-12-25	2024.11.25	1991-09-10	1250.00	active
+7	Grace	2022.08.15	2024-12-04	1993.04.30	890.25	inactive
+8	Henry	2021-05-01	2024.12.05	1989.12.31	1750.80	active
+
+# Test 2: Explicitly cast mixed format date columns to DATE type
+query IITTTRI
+SELECT 
+    id,
+    name,
+    registration_date::DATE,
+    last_login::DATE,
+    birth_date::DATE,
+    amount,
+    status
+FROM read_csv('test/data/test_mixed_formats.csv', header=true, auto_detect=false, 
+              columns={'id': 'INTEGER', 'name': 'VARCHAR', 'registration_date': 'VARCHAR', 
+                      'last_login': 'VARCHAR', 'birth_date': 'VARCHAR', 'amount': 'DOUBLE', 
+                      'status': 'VARCHAR'});
+----
+1	Alice	2023-01-15	2024-12-01	1990-05-20	1000.50	active
+2	Bob	2022-06-30	2024-11-28	1985-03-15	2500.75	inactive
+3	Charlie	2021-07-04	2024-11-30	1992-11-08	500.00	active
+4	Diana	2024-02-29	2024-12-02	1988-07-22	3000.25	active
+5	Eve	2020-03-10	2024-12-03	1995-01-01	750.50	pending
+6	Frank	2023-12-25	2024-11-25	1991-09-10	1250.00	active
+7	Grace	2022-08-15	2024-12-04	1993-04-30	890.25	inactive
+8	Henry	2021-05-01	2024-12-05	1989-12-31	1750.80	active
+
+# Test 3: Verify date operations work on mixed format dates
+query II
+SELECT 
+    name, 
+    DATEDIFF('day', birth_date::DATE, last_login::DATE) AS days_lived
+FROM read_csv('test/data/test_mixed_formats.csv', header=true, auto_detect=false,
+              columns={'id': 'INTEGER', 'name': 'VARCHAR', 'registration_date': 'VARCHAR', 
+                      'last_login': 'VARCHAR', 'birth_date': 'VARCHAR', 'amount': 'DOUBLE', 
+                      'status': 'VARCHAR'})
+WHERE id IN (1, 5);
+----
+Alice	12614
+Eve	10929
+
+# Test 4: Filter using date comparisons with mixed formats
+query IT
+SELECT name, birth_date::DATE
+FROM read_csv('test/data/test_mixed_formats.csv', header=true, auto_detect=false,
+              columns={'id': 'INTEGER', 'name': 'VARCHAR', 'registration_date': 'VARCHAR', 
+                      'last_login': 'VARCHAR', 'birth_date': 'VARCHAR', 'amount': 'DOUBLE', 
+                      'status': 'VARCHAR'})
+WHERE birth_date::DATE > '1990-01-01'::DATE
+ORDER BY birth_date::DATE;
+----
+Alice	1990-05-20
+Frank	1991-09-10
+Charlie	1992-11-08
+Grace	1993-04-30
+Eve	1995-01-01
+
+# Test 5: Aggregate functions on dates with mixed formats
+query I
+SELECT COUNT(DISTINCT DATE_PART('year', birth_date::DATE))
+FROM read_csv('test/data/test_mixed_formats.csv', header=true, auto_detect=false,
+              columns={'id': 'INTEGER', 'name': 'VARCHAR', 'registration_date': 'VARCHAR', 
+                      'last_login': 'VARCHAR', 'birth_date': 'VARCHAR', 'amount': 'DOUBLE', 
+                      'status': 'VARCHAR'});
+----
+8

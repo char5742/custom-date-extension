@@ -1,0 +1,33 @@
+# Additional test targets for custom_date extension
+
+.PHONY: test-mixed test-all test-verbose
+
+# Run mixed format test specifically
+test-mixed: build
+	@echo "Running mixed format test..."
+	@./test/run_mixed_format_test.sh
+
+# Run all tests with custom runner
+test-all: build
+	@echo "Running all custom_date tests..."
+	@./test/run_tests.sh
+
+# Run tests with verbose output
+test-verbose: build
+	@echo "Running tests with verbose output..."
+	@cd $(PROJ_DIR) && ./build/release/test/unittest --test-dir . "[custom_date]" -v
+
+# Ensure build is complete before running tests
+build:
+	@if [ ! -f ./build/release/test/unittest ]; then \
+		echo "Building project first..."; \
+		$(MAKE) release; \
+	fi
+
+# Help target
+help-test:
+	@echo "Custom test targets:"
+	@echo "  make test          - Run standard tests (from duckdb_extension.Makefile)"
+	@echo "  make test-mixed    - Run mixed format test specifically"
+	@echo "  make test-all      - Run all tests with custom runner"
+	@echo "  make test-verbose  - Run tests with verbose output"

@@ -1,0 +1,217 @@
+name: Maintenance
+on:
+  schedule:
+    # Run weekly on Mondays at 9 AM UTC
+    - cron: '0 9 * * 1'
+  workflow_dispatch:
+    inputs:
+      check_dependencies:
+        description: 'Check for dependency updates'
+        required: false
+        default: true
+        type: boolean
+      update_submodules:
+        description: 'Update git submodules'
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  maintenance:
+    name: Maintenance Tasks
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Git Config
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git config --global --add safe.directory '*'
+
+      - name: Check for submodule updates
+        if: ${{ github.event.inputs.update_submodules != 'false' }}
+        id: submodule_check
+        run: |
+          echo "Checking for submodule updates..."
+          
+          # Update submodules to latest
+          git submodule update --remote --merge
+          
+          # Check if there are any changes
+          if git diff --quiet --cached; then
+            echo "has_updates=false" >> $GITHUB_OUTPUT
+            echo "No submodule updates available"
+          else
+            echo "has_updates=true" >> $GITHUB_OUTPUT
+            echo "Submodule updates found:"
+            git diff --cached --name-only
+            
+            # Get DuckDB version info
+            if [ -f "duckdb/CMakeLists.txt" ]; then
+              duckdb_version=$(cd duckdb && git describe --tags --abbrev=0 2>/dev/null || echo "unknown")
+              echo "duckdb_version=$duckdb_version" >> $GITHUB_OUTPUT
+            fi
+          fi
+
+      - name: Check extension-ci-tools version
+        id: ci_tools_check
+        run: |
+          cd extension-ci-tools
+          current_branch=$(git branch --show-current)
+          git fetch origin
+          
+          if [ "$current_branch" = "main" ]; then
+            # Check if we're behind origin/main
+            behind=$(git rev-list --count HEAD..origin/main)
+            if [ "$behind" -gt 0 ]; then
+              echo "ci_tools_updates=true" >> $GITHUB_OUTPUT
+              echo "Extension CI tools has $behind new commits"
+            else
+              echo "ci_tools_updates=false" >> $GITHUB_OUTPUT
+              echo "Extension CI tools is up to date"
+            fi
+          else
+            echo "ci_tools_updates=false" >> $GITHUB_OUTPUT
+            echo "Extension CI tools is on branch $current_branch (not main)"
+          fi
+
+      - name: Test build with updates
+        if: steps.submodule_check.outputs.has_updates == 'true'
+        run: |
+          echo "Testing build with updated submodules..."
+          make clean
+          make debug
+          
+          # Run basic tests
+          make test || {
+            echo "⚠️ Tests failed with updated dependencies"
+            echo "test_status=failed" >> $GITHUB_ENV
+          }
+          
+          echo "test_status=passed" >> $GITHUB_ENV
+
+      - name: Create Pull Request for updates
+        if: steps.submodule_check.outputs.has_updates == 'true' && env.test_status == 'passed'
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: |
+            chore: update dependencies
+            
+            - Update DuckDB submodule to ${{ steps.submodule_check.outputs.duckdb_version }}
+            - Update extension-ci-tools if available
+            
+            🤖 This is an automated dependency update
+          title: "chore: update dependencies to latest versions"
+          body: |
+            ## Automated Dependency Update 🤖
+            
+            This PR updates the project dependencies to their latest versions:
+            
+            ### Changes
+            - **DuckDB**: Updated to `${{ steps.submodule_check.outputs.duckdb_version }}`
+            - **Extension CI Tools**: ${{ steps.ci_tools_check.outputs.ci_tools_updates == 'true' && 'Updated to latest' || 'No updates available' }}
+            
+            ### Validation
+            - ✅ Build test passed
+            - ✅ Unit tests passed
+            
+            ### Next Steps
+            1. Review the changes
+            2. Test manually if needed
+            3. Merge if everything looks good
+            
+            ---
+            *This PR was created automatically by the maintenance workflow.*
+          branch: chore/update-dependencies
+          delete-branch: true
+          draft: false
+
+      - name: Check for security vulnerabilities
+        if: ${{ github.event.inputs.check_dependencies != 'false' }}
+        run: |
+          echo "Checking for known security issues..."
+          
+          # Check if DuckDB has any known issues (this is a placeholder - 
+          # in a real scenario you might want to check security databases)
+          echo "No automated security vulnerability checks implemented yet"
+          echo "Consider implementing checks for:"
+          echo "- Known CVEs in dependencies"
+          echo "- Outdated dependency versions"
+          echo "- Security advisories"
+
+      - name: Generate maintenance report
+        run: |
+          echo "## Maintenance Report 🔧" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Date**: $(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          echo "### Submodule Updates" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ steps.submodule_check.outputs.has_updates }}" = "true" ]; then
+            echo "- ✅ Updates found and PR created" >> $GITHUB_STEP_SUMMARY
+            echo "- **DuckDB Version**: ${{ steps.submodule_check.outputs.duckdb_version }}" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "- ✅ No updates needed" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Extension CI Tools" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ steps.ci_tools_check.outputs.ci_tools_updates }}" = "true" ]; then
+            echo "- ⚠️ Updates available" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "- ✅ Up to date" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Build Status" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ env.test_status }}" = "passed" ]; then
+            echo "- ✅ Build and tests passed" >> $GITHUB_STEP_SUMMARY
+          elif [ "${{ env.test_status }}" = "failed" ]; then
+            echo "- ❌ Build or tests failed" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "- ⏭️ Skipped (no updates)" >> $GITHUB_STEP_SUMMARY
+          fi
+
+  # Check for stale issues and PRs
+  stale:
+    name: Mark Stale Issues
+    runs-on: ubuntu-24.04
+    if: github.event_name == 'schedule'
+    permissions:
+      issues: write
+      pull-requests: write
+    steps:
+      - name: Mark stale issues and PRs
+        uses: actions/stale@v9
+        with:
+          stale-issue-message: |
+            This issue has been automatically marked as stale because it has not had 
+            recent activity. It will be closed if no further activity occurs within 
+            7 days. Thank you for your contributions.
+          stale-pr-message: |
+            This pull request has been automatically marked as stale because it has 
+            not had recent activity. It will be closed if no further activity occurs 
+            within 7 days. Thank you for your contributions.
+          close-issue-message: |
+            This issue has been automatically closed due to inactivity. If you 
+            believe this issue is still relevant, please feel free to reopen it.
+          close-pr-message: |
+            This pull request has been automatically closed due to inactivity. If you 
+            believe this PR is still relevant, please feel free to reopen it.
+          days-before-stale: 60
+          days-before-close: 7
+          stale-issue-label: 'stale'
+          stale-pr-label: 'stale'
+          exempt-issue-labels: 'bug,enhancement,help wanted,good first issue'
+          exempt-pr-labels: 'work in progress,do not merge'

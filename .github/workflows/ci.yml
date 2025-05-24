@@ -1,0 +1,108 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Fast CI build for quick feedback
+  quick-build:
+    name: Quick Build & Test
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+          fetch-depth: 0
+
+      - name: Setup Git Config
+        run: |
+          git config --global --add safe.directory '*'
+
+      - name: Quick build and test
+        run: |
+          make clean
+          make debug
+          make test
+
+      - name: Test extension loading
+        run: |
+          # Test that the extension can be loaded and basic functionality works
+          ./build/debug/duckdb -c "
+            LOAD './build/debug/extension/custom_date/custom_date.duckdb_extension';
+            SELECT '2024.01.15'::DATE as test_date;
+            SELECT '2024.12.31'::DATE as test_date2;
+          "
+
+  # Full distribution build (similar to release but without publishing)
+  full-build:
+    name: Full Distribution Build
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    uses: ./extension-ci-tools/.github/workflows/_extension_distribution.yml
+    with:
+      extension_name: custom_date
+      duckdb_version: v1.2.2
+      ci_tools_version: v1.2.2
+      build_duckdb_shell: true
+      skip_tests: false
+      exclude_archs: "wasm_mvp;wasm_eh;wasm_threads"  # Exclude WASM for faster CI
+    secrets: inherit
+
+  # Test the built artifacts
+  test-artifacts:
+    name: Test Built Artifacts
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    needs: full-build
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download Linux artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: custom_date-v1.2.2-extension-linux_amd64_gcc4
+          path: test-extension
+
+      - name: Test extension functionality
+        run: |
+          # Find the extension file
+          extension_file=$(find test-extension -name "*.duckdb_extension" | head -1)
+          duckdb_binary=$(find test-extension -name "duckdb" | head -1)
+          
+          if [ -f "$extension_file" ] && [ -f "$duckdb_binary" ]; then
+            echo "Testing extension: $extension_file"
+            echo "Using DuckDB binary: $duckdb_binary"
+            
+            # Make binary executable
+            chmod +x "$duckdb_binary"
+            
+            # Test basic functionality
+            "$duckdb_binary" -c "
+              LOAD '$extension_file';
+              
+              -- Test basic date parsing
+              SELECT '2024.01.15'::DATE as test1;
+              SELECT '2023.12.31'::DATE as test2;
+              
+              -- Test with CSV data
+              CREATE TABLE test_dates AS SELECT * FROM read_csv('test/data/test_custom_date.csv', AUTO_DETECT=true);
+              SELECT * FROM test_dates LIMIT 5;
+              
+              -- Test invalid dates (should return NULL)
+              SELECT '2024.13.01'::DATE as invalid_month;
+              SELECT '2024.02.30'::DATE as invalid_day;
+            "
+            
+            echo "✅ Extension test completed successfully"
+          else
+            echo "❌ Could not find extension file or DuckDB binary"
+            exit 1
+          fi

@@ -1,0 +1,39 @@
+name: "CodeQL Config for Custom Date Extension"
+
+# Paths to analyze
+paths:
+  - src/
+  - test/
+
+# Paths to ignore  
+paths-ignore:
+  - duckdb/
+  - extension-ci-tools/
+  - build/
+  - "**/*.test"
+  - "**/*.md"
+
+# Queries to run
+queries:
+  - uses: security-and-quality
+  - uses: security-extended
+
+# Disable default queries that might be too noisy for a DuckDB extension
+disable-default-queries: false
+
+# Additional packs to include
+packs:
+  - codeql/cpp-queries:AlertSuppression.ql
+  - codeql/cpp-queries:Security
+
+# Query filters
+query-filters:
+  - exclude:
+      id: cpp/poorly-documented-function
+  - exclude:
+      id: cpp/missing-header-guard
+      
+# Build configuration
+cpp:
+  # Tell CodeQL how to find the compilation database
+  compilation-database: "build/debug/compile_commands.json"
