@@ -43,6 +43,10 @@ jobs:
         run: |
           make clean
           make debug
+        env:
+          # Disable AddressSanitizer for CodeQL analysis to avoid runtime issues
+          CMAKE_BUILD_PARALLEL_LEVEL: 4
+          EXT_DEBUG_FLAGS: "-DENABLE_SANITIZER=FALSE -DENABLE_UBSAN=FALSE"
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v3
